@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +9,373 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      debugShowCheckedModeBanner: false,
+      title: 'Aplikasi Cuaca',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        fontFamily: 'Roboto',
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const WeatherHomeScreen(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class WeatherHomeScreen extends StatefulWidget {
+  const WeatherHomeScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<WeatherHomeScreen> createState() => _WeatherHomeScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
+  bool isLoading = true;
+  String cityName = "Memuat...";
+  double temperature = 0.0;
+  String weatherDescription = "";
+  String weatherMain = "";
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  // List baru untuk menyimpan data ramalan cuaca dinamis
+  List<Map<String, dynamic>> hourlyForecast = [];
+  List<Map<String, dynamic>> dailyForecast = [];
+  
+  // Kunci API Anda yang sudah aktif
+  final String apiKey = "26ae76b8c63a8e30cc288a2a4a1241a7"; 
+  final String targetCity = "Jakarta"; 
+
+  @override
+  void initState() {
+    super.initState();
+    fetchAllWeatherData();
+  }
+
+  // Fungsi untuk mengambil data Cuaca Sekarang & Data Prakiraan sekaligus
+  Future<void> fetchAllWeatherData() async {
+    // URL 1: Cuaca Saat Ini
+    final currentWeatherUrl = Uri.parse(
+        'https://api.openweathermap.org/data/2.5/weather?q=$targetCity&appid=$apiKey&units=metric&lang=id');
+    
+    // URL 2: Prakiraan 5 Hari / 3 Jam ke depan
+    final forecastUrl = Uri.parse(
+        'https://api.openweathermap.org/data/2.5/forecast?q=$targetCity&appid=$apiKey&units=metric&lang=id');
+
+    try {
+      // Menjalankan kedua request API secara bersamaan agar efisien
+      final responses = await Future.wait([
+        http.get(currentWeatherUrl),
+        http.get(forecastUrl),
+      ]);
+
+      final currentWeatherResponse = responses[0];
+      final forecastResponse = responses[1];
+
+      if (currentWeatherResponse.statusCode == 200 && forecastResponse.statusCode == 200) {
+        final currentData = json.decode(currentWeatherResponse.body);
+        final forecastData = json.decode(forecastResponse.body);
+
+        // 1. Parsing Data Cuaca Sekarang
+        cityName = currentData['name'];
+        temperature = currentData['main']['temp'];
+        weatherDescription = (currentData['weather'][0]['description']).toString().toTitleCase();
+        weatherMain = currentData['weather'][0]['main'];
+
+        // 2. Parsing Data Per Jam (Ambil 5 slot waktu pertama dari API)
+        List forecastList = forecastData['list'];
+        List<Map<String, dynamic>> tempHourly = [];
+        
+        for (int i = 0; i < 5; i++) {
+          var item = forecastList[i];
+          // Mengubah timestamp unix menjadi jam format lokal (HH:mm)
+          DateTime date = DateTime.fromMillisecondsSinceEpoch(item['dt'] * 1000);
+          String timeStr = "${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}";
+          
+          tempHourly.add({
+            'time': i == 0 ? 'Sekarang' : timeStr,
+            'temp': '${item['main']['temp'].round()}°',
+            'main': item['weather'][0]['main'],
+          });
+        }
+
+        // 3. Parsing Data Harian
+        // Karena API gratis menyediakan data per 3 jam, kita lompat setiap 8 data (8 x 3 jam = 24 jam) 
+        // untuk mendapatkan cuaca di hari-hari berikutnya.
+        List<Map<String, dynamic>> tempDaily = [];
+        List<String> namaHari = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
+        for (int i = 8; i < forecastList.length; i += 8) {
+          var item = forecastList[i];
+          DateTime date = DateTime.fromMillisecondsSinceEpoch(item['dt'] * 1000);
+          String hari = namaHari[date.weekday - 1];
+
+          tempDaily.add({
+            'day': hari,
+            'temp': '${item['main']['temp_min'].round()}°C - ${item['main']['temp_max'].round()}°C',
+            'main': item['weather'][0]['main'],
+          });
+        }
+
+        setState(() {
+          hourlyForecast = tempHourly;
+          dailyForecast = tempDaily;
+          isLoading = false;
+        });
+
+      } else {
+        setState(() {
+          cityName = "Gagal memuat data API";
+          isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        cityName = "Kesalahan Jaringan";
+        isLoading = false;
+      });
+      print("Error: $e");
+    }
+  }
+
+  // Helper untuk menentukan ikon cuaca bawaan Flutter
+  IconData getWeatherIcon(String condition) {
+    switch (condition.toLowerCase()) {
+      case 'clear': return Icons.wb_sunny;
+      case 'clouds': return Icons.wb_cloudy;
+      case 'rain': return Icons.water_drop;
+      case 'thunderstorm': return Icons.flash_on;
+      case 'drizzle': return Icons.cloudy_snowing;
+      default: return Icons.wb_cloudy;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+      extendBodyBehindAppBar: true,
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.blue[500]!,
+              Colors.blue[300]!,
+              Colors.blue[100]!,
+            ],
+          ),
+        ),
+        child: SafeArea(
+          child: isLoading 
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
+          : RefreshIndicator(
+              onRefresh: fetchAllWeatherData, // Fitur tarik ke bawah untuk refresh data
+              color: Colors.blue,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeader(),
+                    const SizedBox(height: 30),
+                    _buildHeroSection(),
+                    const SizedBox(height: 20),
+                    _buildInsightBox(),
+                    const SizedBox(height: 20),
+                    _buildHourlyForecast(), 
+                    const SizedBox(height: 20),
+                    _buildDailyForecast(),  
+                  ],
+                ),
+              ),
+            ),
+        ),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Row(
           children: [
-            const Text('You have pushed the button this many times:'),
+            const Icon(Icons.location_on, color: Colors.white, size: 20),
+            const SizedBox(width: 8),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              cityName,
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w500),
             ),
           ],
         ),
+        const Icon(Icons.settings_outlined, color: Colors.white),
+      ],
+    );
+  }
+
+  Widget _buildHeroSection() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${temperature.round()}°',
+                style: const TextStyle(color: Colors.white, fontSize: 72, fontWeight: FontWeight.bold, height: 1.0),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                weatherDescription,
+                style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600),
+              ),
+              const Text(
+                'Hari Ini',
+                style: TextStyle(color: Colors.white70, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+        Icon(
+          getWeatherIcon(weatherMain),
+          color: weatherMain.toLowerCase() == 'clear' ? Colors.yellowAccent : Colors.white,
+          size: 100,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInsightBox() {
+    String tipMessage = "Hari yang menyenangkan! Nikmati aktivitas Anda.";
+    if (weatherMain.toLowerCase() == 'rain' || weatherMain.toLowerCase() == 'drizzle') {
+      tipMessage = "Sedia payung sebelum keluar rumah, ya!";
+    } else if (weatherMain.toLowerCase() == 'clear') {
+      tipMessage = "Cuaca cukup terik, jangan lupa gunakan tabir surya.";
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(15),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+      child: Row(
+        children: [
+          const Icon(Icons.lightbulb_outline, color: Colors.yellowAccent, size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              tipMessage, // REKOMENDASI PINNTAR BERDASARKAN API CUACA
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+        ],
       ),
     );
   }
+
+  // WIDGET JAM-JAMAN SUDAH 100% DINAMIS
+  Widget _buildHourlyForecast() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 15),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: SizedBox(
+        height: 100,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          itemCount: hourlyForecast.length,
+          itemBuilder: (context, index) {
+            final data = hourlyForecast[index];
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(data['time']!, style: const TextStyle(color: Colors.white)),
+                  Icon(
+                    getWeatherIcon(data['main']),
+                    color: data['main'].toString().toLowerCase() == 'clear' ? Colors.yellowAccent : Colors.white,
+                  ),
+                  Text(
+                    data['temp']!,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // WIDGET HARIAN SUDAH 100% DINAMIS
+  Widget _buildDailyForecast() {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: dailyForecast.map((data) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                SizedBox(
+                  width: 90, 
+                  child: Text(data['day']!, style: const TextStyle(color: Colors.white, fontSize: 16))
+                ),
+                Icon(
+                  getWeatherIcon(data['main']), 
+                  color: data['main'].toString().toLowerCase() == 'clear' ? Colors.yellowAccent : Colors.white, 
+                  size: 20
+                ),
+                Text(
+                  data['temp']!, 
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Container(
+      color: Colors.white,
+      child: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        selectedItemColor: Colors.blue[800],
+        unselectedItemColor: Colors.grey,
+        showSelectedLabels: false,
+        showUnselectedLabels: false,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+          BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: 'Chart'),
+          BottomNavigationBarItem(icon: Icon(Icons.location_on_outlined), label: 'Location'),
+          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'Profile'),
+        ],
+      ),
+    );
+  }
+}
+
+extension StringCasingExtension on String {
+  String toTitleCase() => replaceAll(RegExp(' +'), ' ').split(' ').map((str) => str.isNotEmpty ? str[0].toUpperCase() + str.substring(1) : '').join(' ');
 }
